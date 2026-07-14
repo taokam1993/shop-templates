@@ -193,6 +193,19 @@
   .toast{position:fixed; bottom:calc(24px + env(safe-area-inset-bottom)); left:50%; transform:translateX(-50%) translateY(20px); background:var(--green); color:#fff; padding:11px 20px; border-radius:10px; font-size:14px; font-weight:600; opacity:0; pointer-events:none; transition:.25s; z-index:100; box-shadow:0 8px 24px rgba(0,0,0,.3)}
   .toast.show{opacity:1; transform:translateX(-50%) translateY(0)}
 
+  /* sync status pill */
+  .sync-pill{display:inline-flex; align-items:center; gap:6px; padding:7px 11px; border-radius:20px; border:1px solid var(--line); background:var(--panel2); color:var(--text); font-size:13px; cursor:pointer; font-family:inherit; white-space:nowrap}
+  .sync-pill:hover{border-color:var(--accent)}
+  .sync-pill .dot{width:9px; height:9px; border-radius:50%; background:var(--muted); flex:none; transition:.2s}
+  .sync-pill.ok .dot{background:var(--green)}
+  .sync-pill.syncing .dot{background:var(--var); animation:pulse 1s infinite}
+  .sync-pill.connecting .dot{background:var(--var)}
+  .sync-pill.off .dot{background:var(--red)}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+  #qrBox svg{display:block}
+  .sync-hr{border:none; border-top:1px solid var(--line); margin:16px 0}
+  @media(max-width:560px){ .sync-pill .label{display:none} .sync-pill{padding:8px} }
+
   @media(max-width:560px){
     .main-head{padding:14px}
     .main-head .btn.sm{padding:8px 10px; font-size:12px}
@@ -218,6 +231,7 @@
     <div class="logo">📋</div>
     <h1>คลังข้อความร้านค้า</h1>
     <div class="spacer"></div>
+    <span class="sync-pill" id="syncPill" title="ซิงก์ข้ามอุปกรณ์"><span class="dot"></span><span class="label" id="syncText">ซิงก์</span></span>
     <button class="btn ghost icon" id="themeBtn" title="สลับธีม">🌙</button>
     <button class="btn ghost sm" id="exportBtn">ส่งออก</button>
     <button class="btn ghost sm" id="importBtn">นำเข้า</button>
@@ -345,6 +359,30 @@
   </div>
 </div>
 
+<!-- Sync / pairing modal -->
+<div class="overlay" id="syncOverlay">
+  <div class="modal">
+    <h3>☁️ ซิงก์ข้ามอุปกรณ์</h3>
+    <p class="msg" id="syncStatusMsg">พิมพ์ที่เครื่องไหน อีกเครื่องเห็นทันที — ไม่ต้องตั้งรหัส</p>
+    <div id="qrBox" style="display:flex; justify-content:center; margin:14px 0"></div>
+    <p class="msg" style="text-align:center; color:var(--muted); font-size:13px">📱 เปิดกล้องมือถือสแกน QR นี้ เพื่อเปิดคลังข้อความชุดเดียวกัน</p>
+    <div class="field" style="margin-top:14px">
+      <label>หรือคัดลอกลิงก์นี้ไปเปิดในอีกเครื่อง</label>
+      <input type="text" id="syncLink" readonly onclick="this.select()">
+    </div>
+    <button class="btn primary sm" id="copyLinkBtn" style="width:100%; justify-content:center">📋 คัดลอกลิงก์ซิงก์</button>
+    <hr class="sync-hr">
+    <div class="field">
+      <label>มีลิงก์/รหัสจากอีกเครื่องแล้ว? วางที่นี่เพื่อผูกเข้าด้วยกัน</label>
+      <input type="text" id="pasteCode" placeholder="วางลิงก์หรือรหัสซิงก์">
+    </div>
+    <div class="modal-actions">
+      <button class="btn ghost" id="syncCloseBtn">ปิด</button>
+      <button class="btn primary" id="applyCodeBtn">ผูกอุปกรณ์</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast">คัดลอกแล้ว!</div>
 
 <script>
@@ -358,10 +396,13 @@ let editingTmplId = null;
 let editingShop = false;
 let pickedColor = COLORS[1];
 let editingImages = [];   // data URIs ของรูปในกล่องแก้ไขข้อความ
+// ----- cloud sync state (ต้องประกาศก่อน save()/render() ทำงานตอน init) -----
+let applyingRemote = false, syncReady = false, docRef = null, FS = null, pushT = null, syncId = null, unsub = null;
 
 // ---------- storage ----------
 function migrate(){
   if(!state.sort) state.sort = 'recent';
+  if(typeof state.dataUpdatedAt !== 'number') state.dataUpdatedAt = 0;
   state.shops.forEach(s => {
     if(!s.color) s.color = COLORS[1];
     if(!Array.isArray(s.categories)) s.categories = [];
@@ -377,7 +418,14 @@ function load(){
   migrate();
   if(state.shops.length && !state.activeId) state.activeId = state.shops[0].id;
 }
+let lastDataJson = '';   // สำหรับตรวจว่าข้อมูล (shops) เปลี่ยนจริงไหม เพื่อซิงก์ขึ้นคลาวด์
 function save(){
+  // ตรวจว่าข้อมูลจริง (shops) เปลี่ยนไหม -> อัปเดตเวลาแก้ไข + ส่งขึ้นคลาวด์
+  const dj = JSON.stringify(state.shops);
+  if(dj !== lastDataJson){
+    lastDataJson = dj;
+    if(!applyingRemote){ state.dataUpdatedAt = Date.now(); schedulePush(); }
+  }
   try{ localStorage.setItem(STORE_KEY, JSON.stringify(state)); return true; }
   catch(e){
     // มักเกิดจากพื้นที่เต็ม (รูปเยอะเกินไป)
@@ -889,7 +937,7 @@ function closeNavIfMobile(){ if(!isDesktop()) setNav(false); }
 mqDesktop.addEventListener('change', e => setNav(e.matches)); // เปิดอัตโนมัติบนจอกว้าง, ปิดบนจอแคบ
 
 // ---------- modals / theme ----------
-function closeModals(){ ['shopOverlay','tmplOverlay'].forEach(id => $(id).classList.remove('show')); }
+function closeModals(){ ['shopOverlay','tmplOverlay','syncOverlay'].forEach(id => $(id).classList.remove('show')); }
 function applyTheme(t){
   document.documentElement.classList.toggle('light', t==='light');
   $('themeBtn').textContent = t==='light' ? '☀️' : '🌙';
@@ -911,6 +959,12 @@ $('importFile').onchange = e => { if(e.target.files[0]) importData(e.target.file
 $('themeBtn').onclick = () => applyTheme(document.documentElement.classList.contains('light') ? 'dark' : 'light');
 $('navToggle').onclick = toggleNav;
 $('backdrop').onclick = () => setNav(false);
+// sync / pairing
+$('syncPill').onclick = openSyncModal;
+$('syncCloseBtn').onclick = closeModals;
+$('copyLinkBtn').onclick = () => { copyText($('syncLink').value); };
+$('applyCodeBtn').onclick = applyPastedCode;
+$('syncOverlay').onclick = e => { if(e.target === $('syncOverlay')) closeModals(); };
 // รูปภาพ
 $('addImgBtn').onclick = () => $('imgFileInput').click();
 $('imgFileInput').onchange = e => { if(e.target.files.length) handleImageFiles([...e.target.files]); e.target.value=''; };
@@ -921,7 +975,7 @@ $('imgCopyBtn').onclick = () => copyImage(imgViewerList[imgViewerIdx]);
 $('imgDownloadBtn').onclick = () => downloadImage(imgViewerList[imgViewerIdx], 'image-' + (imgViewerIdx+1) + '.jpg');
 document.querySelectorAll('[data-close]').forEach(b => b.onclick = closeModals);
 [$('shopOverlay'),$('tmplOverlay')].forEach(o => o.onclick = e => { if(e.target===o) closeModals(); });
-function anyModalOpen(){ return ['shopOverlay','tmplOverlay','confirmOverlay','promptOverlay','imgOverlay'].some(id => $(id).classList.contains('show')); }
+function anyModalOpen(){ return ['shopOverlay','tmplOverlay','confirmOverlay','promptOverlay','imgOverlay','syncOverlay'].some(id => $(id).classList.contains('show')); }
 document.addEventListener('keydown', e => {
   if(e.key === 'Escape'){
     if($('imgOverlay').classList.contains('show')){ closeImgViewer(); }  // ปิด lightbox ก่อน
@@ -938,11 +992,177 @@ document.addEventListener('keydown', e => {
   }
 });
 
+// ---------- CLOUD SYNC (Firebase Firestore) ----------
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyCNukk05xj9Oyez999YpC9jbXjKD9m7K2k",
+  authDomain: "shop-templates-1803f.firebaseapp.com",
+  projectId: "shop-templates-1803f",
+  storageBucket: "shop-templates-1803f.firebasestorage.app",
+  messagingSenderId: "547785450915",
+  appId: "1:547785450915:web:b9a291e78335c497d02616"
+};
+const SYNC_ID_KEY = 'shopTemplates.syncId';
+const clientId = Math.random().toString(36).slice(2);
+
+function genSyncId(){
+  const a = new Uint8Array(16); crypto.getRandomValues(a);
+  return Array.from(a, b => b.toString(16).padStart(2,'0')).join('');
+}
+function parseSyncId(text){
+  if(!text) return null;
+  const m = String(text).match(/sync=([a-f0-9]{8,})/i);
+  if(m) return m[1];
+  const t = String(text).trim();
+  return /^[a-f0-9]{8,}$/i.test(t) ? t : null;
+}
+function syncLinkFor(id){ return location.origin + location.pathname + '#sync=' + id; }
+
+function setSyncStatus(cls, text){
+  const pill = $('syncPill'); if(!pill) return;
+  pill.className = 'sync-pill ' + cls;
+  $('syncText').textContent = text;
+}
+
+async function initSync(){
+  if(location.protocol === 'file:'){ setSyncStatus('off','ออฟไลน์'); return; } // sync ต้องออนไลน์
+  try{
+    // หา syncId: จากลิงก์ #sync= > ที่เก็บไว้ > สร้างใหม่
+    let fromLink = parseSyncId(location.hash);
+    if(fromLink) history.replaceState(null, '', location.pathname + location.search);
+    let id = localStorage.getItem(SYNC_ID_KEY);
+    if(fromLink && fromLink !== id){
+      if(id && state.shops.length){
+        const ok = await confirmDialog('ผูกอุปกรณ์นี้กับอีกเครื่อง? ข้อมูลในเครื่องนี้จะถูกแทนที่ด้วยข้อมูลของเครื่องที่ซิงก์กัน', {title:'ผูกอุปกรณ์', okText:'ผูกเลย', danger:false});
+        if(ok){ state.dataUpdatedAt = 0; id = fromLink; }  // บังคับให้ข้อมูลจากคลาวด์ชนะ
+      } else { id = fromLink; }
+    }
+    if(!id){ id = genSyncId(); }
+    localStorage.setItem(SYNC_ID_KEY, id);
+    syncId = id;
+
+    setSyncStatus('connecting','กำลังเชื่อมต่อ');
+    const base = 'https://www.gstatic.com/firebasejs/10.12.5/';
+    const [appMod, authMod, fsMod] = await Promise.all([
+      import(base + 'firebase-app.js'),
+      import(base + 'firebase-auth.js'),
+      import(base + 'firebase-firestore.js')
+    ]);
+    const app = appMod.initializeApp(FIREBASE_CONFIG);
+    const auth = authMod.getAuth(app);
+    await authMod.signInAnonymously(auth);
+    FS = fsMod;
+    const db = fsMod.getFirestore(app);
+    connectTo(syncId, db);
+  }catch(e){
+    console.warn('sync init failed:', e);
+    setSyncStatus('off','ซิงก์ไม่ได้');
+  }
+}
+
+let _db = null;
+function connectTo(id, db){
+  if(db) _db = db;
+  if(!_db || !FS) return;
+  if(unsub){ try{ unsub(); }catch(e){} unsub = null; }
+  syncId = id;
+  localStorage.setItem(SYNC_ID_KEY, id);
+  docRef = FS.doc(_db, 'stores', id);
+  syncReady = true;
+  setSyncStatus('connecting','กำลังซิงก์');
+  unsub = FS.onSnapshot(docRef, snap => {
+    if(!snap.exists()){ schedulePush(); setSyncStatus('ok','ซิงก์แล้ว'); return; }
+    if(snap.metadata.hasPendingWrites){ setSyncStatus('ok','ซิงก์แล้ว'); return; } // เสียงสะท้อนของเราเอง
+    const d = snap.data();
+    if(!d || !Array.isArray(d.shops)){ return; }
+    const ru = d.updatedAt || 0, lu = state.dataUpdatedAt || 0;
+    if(ru > lu){
+      applyingRemote = true;
+      state.shops = d.shops;
+      state.dataUpdatedAt = ru;
+      migrate();
+      if(state.activeId && !state.shops.some(s => s.id === state.activeId)) state.activeId = state.shops[0]?.id || null;
+      lastDataJson = JSON.stringify(state.shops);
+      try{ localStorage.setItem(STORE_KEY, JSON.stringify(state)); }catch(e){}
+      render();
+      applyingRemote = false;
+      setSyncStatus('ok','อัปเดตแล้ว');
+      setTimeout(() => setSyncStatus('ok','ซิงก์แล้ว'), 1500);
+    } else if(lu > ru){
+      schedulePush();
+    } else {
+      setSyncStatus('ok','ซิงก์แล้ว');
+    }
+  }, err => { console.warn('snapshot err', err); setSyncStatus('off','ออฟไลน์'); });
+}
+
+function schedulePush(){
+  if(!syncReady || !docRef || !FS) return;
+  clearTimeout(pushT);
+  pushT = setTimeout(async () => {
+    try{
+      if(!state.dataUpdatedAt) state.dataUpdatedAt = Date.now();
+      setSyncStatus('syncing','กำลังซิงก์');
+      await FS.setDoc(docRef, { shops: state.shops, updatedAt: state.dataUpdatedAt, client: clientId });
+      setSyncStatus('ok','ซิงก์แล้ว');
+    }catch(e){ console.warn('push failed', e); setSyncStatus('off','ซิงก์ไม่ได้'); }
+  }, 700);
+}
+
+// ----- sync modal / QR -----
+let qrLibP = null;
+function loadQrLib(){
+  if(window.qrcode) return Promise.resolve();
+  if(qrLibP) return qrLibP;
+  qrLibP = new Promise((res, rej) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js';
+    s.onload = res; s.onerror = rej;
+    document.head.appendChild(s);
+  });
+  return qrLibP;
+}
+async function renderQR(text){
+  const box = $('qrBox');
+  box.innerHTML = '<span style="color:var(--muted);font-size:13px">กำลังสร้าง QR…</span>';
+  try{
+    await loadQrLib();
+    const qr = qrcode(0, 'M'); qr.addData(text); qr.make();
+    box.innerHTML = qr.createSvgTag({ cellSize: 5, margin: 2, scalable: true });
+    const svg = box.querySelector('svg');
+    if(svg){ svg.style.width = '210px'; svg.style.height = '210px'; svg.style.background = '#fff'; svg.style.padding = '10px'; svg.style.borderRadius = '10px'; }
+  }catch(e){
+    box.innerHTML = '<span style="color:var(--muted);font-size:13px">แสดง QR ไม่ได้ — ใช้ปุ่มคัดลอกลิงก์แทน</span>';
+  }
+}
+function openSyncModal(){
+  if(!syncId){ showToast('ระบบซิงก์ยังไม่พร้อม (ต้องออนไลน์)'); return; }
+  const link = syncLinkFor(syncId);
+  $('syncLink').value = link;
+  $('pasteCode').value = '';
+  $('syncOverlay').classList.add('show');
+  renderQR(link);
+}
+async function applyPastedCode(){
+  const id = parseSyncId($('pasteCode').value);
+  if(!id){ showToast('ลิงก์/รหัสไม่ถูกต้อง'); return; }
+  if(id === syncId){ showToast('เครื่องนี้ผูกกับรหัสนี้อยู่แล้ว'); closeModals(); return; }
+  if(state.shops.length){
+    const ok = await confirmDialog('ผูกกับอีกเครื่อง? ข้อมูลในเครื่องนี้จะถูกแทนที่ด้วยข้อมูลของเครื่องที่ซิงก์กัน', {title:'ผูกอุปกรณ์', okText:'ผูกเลย', danger:false});
+    if(!ok) return;
+  }
+  state.dataUpdatedAt = 0;   // ให้ข้อมูลจากคลาวด์ชนะ
+  closeModals();
+  connectTo(id);
+  showToast('ผูกอุปกรณ์แล้ว — กำลังดึงข้อมูล');
+}
+
 // ---------- init ----------
 applyTheme(localStorage.getItem(THEME_KEY) || 'dark');
 load();
+lastDataJson = JSON.stringify(state.shops);   // ตั้งค่าเริ่ม จะได้ไม่นับว่า "แก้ไข" ตอนโหลด
 $('sortSelect').value = state.sort;
 render();
+initSync();   // เริ่มระบบซิงก์ข้ามอุปกรณ์ (ทำงานเมื่อออนไลน์เท่านั้น)
 
 // ---------- PWA: ลงทะเบียน service worker เฉพาะเมื่อมีไฟล์ sw.js จริง (โฮสต์ทั้งโฟลเดอร์) ----------
 // ถ้าเปิดเป็นไฟล์เดียว (file:// หรือย้ายไฟล์ไปวางเดี่ยว ๆ) จะข้ามไปเงียบ ๆ ไม่มี error
