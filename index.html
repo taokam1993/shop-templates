@@ -169,6 +169,27 @@
   .color-dot{width:28px; height:28px; border-radius:50%; cursor:pointer; border:2px solid transparent}
   .color-dot.sel{border-color:var(--text)}
 
+  /* images: edit grid (in modal) */
+  .img-edit-grid{display:flex; flex-wrap:wrap; gap:8px; margin-bottom:10px}
+  .img-edit-grid:empty{margin-bottom:0}
+  .img-edit-item{position:relative; width:76px; height:76px; border-radius:9px; overflow:hidden; border:1px solid var(--line)}
+  .img-edit-item img{width:100%; height:100%; object-fit:cover; display:block}
+  .img-edit-item .rm{position:absolute; top:2px; right:2px; width:20px; height:20px; border:none; border-radius:50%; background:rgba(0,0,0,.6); color:#fff; font-size:12px; line-height:20px; cursor:pointer; padding:0}
+  .img-edit-item .rm:hover{background:var(--red)}
+
+  /* images: on card */
+  .tmpl-imgs{display:flex; flex-wrap:wrap; gap:8px; padding:0 14px 12px}
+  .thumb{position:relative; width:84px; height:84px; border-radius:9px; overflow:hidden; border:1px solid var(--line); cursor:pointer; background:var(--panel)}
+  .thumb img{width:100%; height:100%; object-fit:cover; display:block}
+  .thumb .thumb-copy{position:absolute; bottom:3px; right:3px; border:none; border-radius:7px; background:rgba(0,0,0,.62); color:#fff; font-size:11px; padding:3px 6px; cursor:pointer; display:inline-flex; gap:3px; align-items:center}
+  .thumb .thumb-copy:hover{background:var(--accent)}
+
+  /* image viewer (lightbox) */
+  #imgOverlay{z-index:60}
+  #imgOverlay .img-viewer{display:flex; flex-direction:column; align-items:center; gap:14px; max-width:100%; max-height:90vh}
+  #imgViewerImg{max-width:min(92vw,720px); max-height:72vh; border-radius:12px; object-fit:contain; box-shadow:0 10px 40px rgba(0,0,0,.5)}
+  .img-viewer-actions{display:flex; gap:10px; flex-wrap:wrap; justify-content:center}
+
   .toast{position:fixed; bottom:calc(24px + env(safe-area-inset-bottom)); left:50%; transform:translateX(-50%) translateY(20px); background:var(--green); color:#fff; padding:11px 20px; border-radius:10px; font-size:14px; font-weight:600; opacity:0; pointer-events:none; transition:.25s; z-index:100; box-shadow:0 8px 24px rgba(0,0,0,.3)}
   .toast.show{opacity:1; transform:translateX(-50%) translateY(0)}
 
@@ -270,6 +291,13 @@
       <textarea id="tmplBodyInput" placeholder="พิมพ์ข้อความที่ใช้บ่อยที่นี่..."></textarea>
       <div class="hint">💡 ใส่ตัวแปรด้วยปีกกา เช่น <code>{ชื่อ}</code> <code>{ราคา}</code> เวลาใช้งานจะมีช่องให้กรอกก่อนคัดลอก</div>
     </div>
+    <div class="field">
+      <label>รูปภาพ (แนบได้หลายรูป)</label>
+      <div class="img-edit-grid" id="tmplImgGrid"></div>
+      <button type="button" class="btn sm" id="addImgBtn">📷 เพิ่มรูป</button>
+      <input type="file" id="imgFileInput" accept="image/*" multiple hidden>
+      <div class="hint">รูปจะถูกย่อขนาดอัตโนมัติเพื่อประหยัดพื้นที่ · เวลาใช้งานกดคัดลอกรูปไปวางในแชต/LINE ได้</div>
+    </div>
     <div class="modal-actions">
       <button class="btn ghost" data-close>ยกเลิก</button>
       <button class="btn primary" id="saveTmplBtn">บันทึก</button>
@@ -305,6 +333,18 @@
   </div>
 </div>
 
+<!-- Image viewer (lightbox) -->
+<div class="overlay" id="imgOverlay">
+  <div class="img-viewer">
+    <img id="imgViewerImg" alt="">
+    <div class="img-viewer-actions">
+      <button class="btn primary" id="imgCopyBtn">📋 คัดลอกรูป</button>
+      <button class="btn" id="imgDownloadBtn">⬇ บันทึกรูป</button>
+      <button class="btn ghost" id="imgCloseBtn">ปิด</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast">คัดลอกแล้ว!</div>
 
 <script>
@@ -317,6 +357,7 @@ let activeCatId = null;
 let editingTmplId = null;
 let editingShop = false;
 let pickedColor = COLORS[1];
+let editingImages = [];   // data URIs ของรูปในกล่องแก้ไขข้อความ
 
 // ---------- storage ----------
 function migrate(){
@@ -327,6 +368,7 @@ function migrate(){
     s.templates.forEach(t => {
       if(!('categoryId' in t)) t.categoryId = null;
       if(!('copyCount' in t)) t.copyCount = 0;
+      if(!Array.isArray(t.images)) t.images = [];
     });
   });
 }
@@ -335,7 +377,14 @@ function load(){
   migrate();
   if(state.shops.length && !state.activeId) state.activeId = state.shops[0].id;
 }
-function save(){ localStorage.setItem(STORE_KEY, JSON.stringify(state)); }
+function save(){
+  try{ localStorage.setItem(STORE_KEY, JSON.stringify(state)); return true; }
+  catch(e){
+    // มักเกิดจากพื้นที่เต็ม (รูปเยอะเกินไป)
+    showToast('⚠️ พื้นที่จัดเก็บเต็ม — ลบรูป/ข้อความเก่า หรือส่งออกข้อมูลไว้');
+    return false;
+  }
+}
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,7);
 
 const $ = id => document.getElementById(id);
@@ -556,6 +605,26 @@ function buildCard(shop, t){
   div.appendChild(line);
   update();
 
+  // รูปภาพแนบ
+  if(Array.isArray(t.images) && t.images.length){
+    const grid = document.createElement('div');
+    grid.className = 'tmpl-imgs';
+    t.images.forEach((src, i) => {
+      const thumb = document.createElement('div');
+      thumb.className = 'thumb';
+      const im = document.createElement('img');
+      im.src = src; im.loading = 'lazy'; im.alt = (t.title||'') + ' รูป ' + (i+1);
+      im.onclick = () => openImgViewer(t.images, i);
+      const cbtn = document.createElement('button');
+      cbtn.className = 'thumb-copy'; cbtn.innerHTML = '📋';
+      cbtn.title = 'คัดลอกรูป';
+      cbtn.onclick = (e) => { e.stopPropagation(); copyImage(src); };
+      thumb.appendChild(im); thumb.appendChild(cbtn);
+      grid.appendChild(thumb);
+    });
+    div.appendChild(grid);
+  }
+
   const copyBtn = head.querySelector('[data-copy]');
   copyBtn.onclick = () => {
     copyText(fillBody(t.body, values));
@@ -591,6 +660,62 @@ let toastT;
 function showToast(msg){
   const t = $('toast'); t.textContent = msg; t.classList.add('show');
   clearTimeout(toastT); toastT = setTimeout(()=>t.classList.remove('show'), 1600);
+}
+
+// ---------- images ----------
+// ย่อรูปก่อนเก็บ เพื่อประหยัดพื้นที่ localStorage
+function fileToResizedDataURL(file, maxDim=1600, quality=0.82){
+  return new Promise((res, rej) => {
+    const img = new Image();
+    img.onload = () => {
+      let w = img.naturalWidth, h = img.naturalHeight;
+      const scale = Math.min(1, maxDim / Math.max(w, h));
+      const cw = Math.max(1, Math.round(w*scale)), ch = Math.max(1, Math.round(h*scale));
+      const c = document.createElement('canvas'); c.width = cw; c.height = ch;
+      c.getContext('2d').drawImage(img, 0, 0, cw, ch);
+      res(c.toDataURL('image/jpeg', quality));
+    };
+    img.onerror = rej;
+    const rd = new FileReader();
+    rd.onload = () => { img.src = rd.result; };
+    rd.onerror = rej;
+    rd.readAsDataURL(file);
+  });
+}
+// แปลงเป็น PNG blob สำหรับคัดลอกลงคลิปบอร์ด
+function toPngBlob(src){
+  return new Promise((res, rej) => {
+    const img = new Image();
+    img.onload = () => {
+      const c = document.createElement('canvas');
+      c.width = img.naturalWidth; c.height = img.naturalHeight;
+      c.getContext('2d').drawImage(img, 0, 0);
+      c.toBlob(b => b ? res(b) : rej(new Error('toBlob failed')), 'image/png');
+    };
+    img.onerror = rej; img.src = src;
+  });
+}
+async function copyImage(src){
+  try{
+    if(!(navigator.clipboard && window.ClipboardItem)) throw new Error('no clipboard image');
+    const blob = await toPngBlob(src);
+    await navigator.clipboard.write([ new ClipboardItem({ 'image/png': blob }) ]);
+    showToast('คัดลอกรูปแล้ว!');
+  }catch(e){
+    showToast('เบราว์เซอร์นี้คัดลอกรูปไม่ได้ — กด "บันทึกรูป" แทน');
+  }
+}
+function downloadImage(src, name){
+  const a = document.createElement('a');
+  a.href = src; a.download = name || ('image-' + Date.now() + '.jpg');
+  a.click();
+}
+// lightbox
+let imgViewerList = [], imgViewerIdx = 0;
+function openImgViewer(list, idx){
+  imgViewerList = list; imgViewerIdx = idx;
+  $('imgViewerImg').src = list[idx];
+  $('imgOverlay').classList.add('show');
 }
 
 // ---------- categories ----------
@@ -675,12 +800,36 @@ function fillCatSelect(shop, selId){
     sel.appendChild(o);
   });
 }
+function renderImgEditGrid(){
+  const grid = $('tmplImgGrid'); grid.innerHTML = '';
+  editingImages.forEach((src, i) => {
+    const item = document.createElement('div');
+    item.className = 'img-edit-item';
+    const im = document.createElement('img'); im.src = src; im.alt = 'รูป ' + (i+1);
+    im.onclick = () => openImgViewer(editingImages, i);
+    const rm = document.createElement('button');
+    rm.className = 'rm'; rm.textContent = '✕'; rm.title = 'ลบรูปนี้';
+    rm.onclick = () => { editingImages.splice(i, 1); renderImgEditGrid(); };
+    item.appendChild(im); item.appendChild(rm);
+    grid.appendChild(item);
+  });
+}
+async function handleImageFiles(files){
+  for(const f of files){
+    if(!f.type.startsWith('image/')) continue;
+    try{ editingImages.push(await fileToResizedDataURL(f)); }
+    catch(e){ showToast('เพิ่มรูปไม่สำเร็จบางรูป'); }
+  }
+  renderImgEditGrid();
+}
 function openTmplModal(tmpl){
   const shop = activeShop(); if(!shop) return;
   editingTmplId = tmpl ? tmpl.id : null;
   $('tmplModalTitle').textContent = tmpl ? 'แก้ไขข้อความ' : 'เพิ่มข้อความ';
   $('tmplTitleInput').value = tmpl ? tmpl.title : '';
   $('tmplBodyInput').value = tmpl ? tmpl.body : '';
+  editingImages = tmpl && Array.isArray(tmpl.images) ? tmpl.images.slice() : [];
+  renderImgEditGrid();
   fillCatSelect(shop, tmpl ? tmpl.categoryId : activeCatId);
   $('tmplOverlay').classList.add('show');
   setTimeout(()=>$('tmplTitleInput').focus(), 50);
@@ -690,12 +839,13 @@ function saveTmpl(){
   const title = $('tmplTitleInput').value.trim();
   const body = $('tmplBodyInput').value;
   const categoryId = $('tmplCatSelect').value || null;
-  if(!body.trim()){ $('tmplBodyInput').focus(); return; }
+  const images = editingImages.slice();
+  if(!body.trim() && !images.length){ $('tmplBodyInput').focus(); showToast('ใส่ข้อความหรือแนบรูปอย่างน้อย 1 อย่าง'); return; }
   if(editingTmplId){
     const t = shop.templates.find(t => t.id === editingTmplId);
-    if(t){ t.title = title; t.body = body; t.categoryId = categoryId; }
+    if(t){ t.title = title; t.body = body; t.categoryId = categoryId; t.images = images; }
   }else{
-    shop.templates.unshift({ id:uid(), title, body, categoryId, copyCount:0 });
+    shop.templates.unshift({ id:uid(), title, body, categoryId, copyCount:0, images });
   }
   closeModals(); render();
 }
@@ -761,11 +911,22 @@ $('importFile').onchange = e => { if(e.target.files[0]) importData(e.target.file
 $('themeBtn').onclick = () => applyTheme(document.documentElement.classList.contains('light') ? 'dark' : 'light');
 $('navToggle').onclick = toggleNav;
 $('backdrop').onclick = () => setNav(false);
+// รูปภาพ
+$('addImgBtn').onclick = () => $('imgFileInput').click();
+$('imgFileInput').onchange = e => { if(e.target.files.length) handleImageFiles([...e.target.files]); e.target.value=''; };
+function closeImgViewer(){ $('imgOverlay').classList.remove('show'); }
+$('imgCloseBtn').onclick = closeImgViewer;
+$('imgOverlay').onclick = e => { if(e.target === $('imgOverlay')) closeImgViewer(); };
+$('imgCopyBtn').onclick = () => copyImage(imgViewerList[imgViewerIdx]);
+$('imgDownloadBtn').onclick = () => downloadImage(imgViewerList[imgViewerIdx], 'image-' + (imgViewerIdx+1) + '.jpg');
 document.querySelectorAll('[data-close]').forEach(b => b.onclick = closeModals);
 [$('shopOverlay'),$('tmplOverlay')].forEach(o => o.onclick = e => { if(e.target===o) closeModals(); });
-function anyModalOpen(){ return ['shopOverlay','tmplOverlay','confirmOverlay','promptOverlay'].some(id => $(id).classList.contains('show')); }
+function anyModalOpen(){ return ['shopOverlay','tmplOverlay','confirmOverlay','promptOverlay','imgOverlay'].some(id => $(id).classList.contains('show')); }
 document.addEventListener('keydown', e => {
-  if(e.key === 'Escape'){ closeModals(); closeNavIfMobile(); }
+  if(e.key === 'Escape'){
+    if($('imgOverlay').classList.contains('show')){ closeImgViewer(); }  // ปิด lightbox ก่อน
+    else { closeModals(); closeNavIfMobile(); }
+  }
   if(e.key === 'Enter' && $('shopOverlay').classList.contains('show')) saveShop();
   // Ctrl/Cmd+F: โฟกัสช่องค้นหา (เฉพาะเมื่อเลือกร้านอยู่ และไม่มี popup เปิดค้าง)
   if((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f'){
