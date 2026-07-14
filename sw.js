@@ -1,5 +1,5 @@
 // Service worker แบบ offline-first สำหรับคลังข้อความร้านค้า
-const CACHE = 'shop-templates-v1';
+const CACHE = 'shop-templates-v2';
 const ASSETS = [
   './',
   './index.html',

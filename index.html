@@ -83,7 +83,8 @@
       z-index:50; border-radius:0; overflow-y:auto;
       transform:translateX(-100%); transition:transform .25s ease;
       box-shadow:0 0 40px rgba(0,0,0,.4);
-      padding-top:max(20px, env(safe-area-inset-top));
+      padding-top:52px; /* fallback ถ้าเบราว์เซอร์ไม่รองรับ env */
+      padding-top:calc(env(safe-area-inset-top, 0px) + 30px);
       padding-left:max(14px, env(safe-area-inset-left));
       padding-bottom:max(14px, env(safe-area-inset-bottom));
     }
