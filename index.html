@@ -139,6 +139,18 @@
   .var-field input{padding:6px 9px; border-radius:7px; border:1px solid var(--line); background:var(--panel); color:var(--text); font-size:13px; font-family:inherit; min-width:130px}
   .var-field input:focus{outline:none; border-color:var(--var)}
   .tmpl-body{padding:12px 14px; white-space:pre-wrap; word-break:break-word; font-size:14px; line-height:1.6}
+  /* ย่อข้อความยาวบนการ์ด */
+  .tmpl-body.clamp{max-height:132px; overflow:hidden; position:relative}
+  .tmpl-body.clamp::after{
+    content:''; position:absolute; left:0; right:0; bottom:0; height:44px;
+    background:linear-gradient(180deg, transparent, var(--panel2));
+    pointer-events:none;
+  }
+  .expand-btn{
+    display:block; width:100%; border:none; background:none; color:var(--accent);
+    font-size:13px; font-family:inherit; padding:7px 14px 11px; cursor:pointer; text-align:center;
+  }
+  .expand-btn:hover{text-decoration:underline}
   .tmpl-body .vmark{color:var(--var); background:var(--varbg); padding:0 4px; border-radius:4px; font-weight:600}
 
   /* LINE preview */
@@ -652,6 +664,19 @@ function buildCard(shop, t){
     div.appendChild(vbox);
   }
   div.appendChild(body);
+  // ย่อการ์ดที่ข้อความยาว (เกิน ~6 บรรทัด หรือยาวมาก) พร้อมปุ่มขยาย
+  const isLong = t.body.split('\n').length > 6 || t.body.length > 350;
+  if(isLong){
+    body.classList.add('clamp');
+    const ex = document.createElement('button');
+    ex.className = 'expand-btn';
+    ex.textContent = 'แสดงทั้งหมด ▾';
+    ex.onclick = () => {
+      const clamped = body.classList.toggle('clamp');
+      ex.textContent = clamped ? 'แสดงทั้งหมด ▾' : 'ย่อ ▴';
+    };
+    div.appendChild(ex);
+  }
   div.appendChild(line);
   update();
 
