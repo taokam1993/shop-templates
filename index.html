@@ -341,7 +341,7 @@
       <div class="img-edit-grid" id="tmplImgGrid"></div>
       <button type="button" class="btn sm" id="addImgBtn">📷 เพิ่มรูป</button>
       <input type="file" id="imgFileInput" accept="image/*" multiple hidden>
-      <div class="hint">รูปจะถูกย่อขนาดอัตโนมัติเพื่อประหยัดพื้นที่ · เวลาใช้งานกดคัดลอกรูปไปวางในแชต/LINE ได้</div>
+      <div class="hint">รูปจะถูกย่อขนาดอัตโนมัติเพื่อประหยัดพื้นที่ · ก๊อปรูปมาแล้ววาง (Ctrl+V) ตรงนี้ได้เลย</div>
     </div>
     <div class="modal-actions">
       <button class="btn ghost" data-close>ยกเลิก</button>
@@ -640,8 +640,10 @@ function buildCard(shop, t){
     ${cName ? `<span class="tmpl-cat-tag">${esc(cName)}</span>` : ''}
     <div class="tmpl-actions">
       <button class="btn primary sm" data-copy>📋 คัดลอก</button>
+      ${navigator.share ? '<button class="btn sm" data-share title="แชร์เข้าแอปอื่น เช่น LINE">📤</button>' : ''}
       <button class="btn sm${t.pinned ? ' pinned' : ''}" data-pin title="${t.pinned ? 'เลิกปักหมุด' : 'ปักหมุดไว้บนสุด'}">📌</button>
       <button class="btn sm" data-line title="ดูตัวอย่างในไลน์">💬</button>
+      <button class="btn sm" data-dup title="ทำสำเนา">⧉</button>
       <button class="btn sm" data-edit title="แก้ไข">✏️</button>
       <button class="btn sm" data-del title="ลบ">🗑️</button>
     </div>`;
@@ -732,6 +734,17 @@ function buildCard(shop, t){
     copyBtn.textContent = '✓ คัดลอกแล้ว';
     setTimeout(() => { copyBtn.classList.remove('copied'); copyBtn.textContent = '📋 คัดลอก'; }, 1300);
   };
+  const shareBtn = head.querySelector('[data-share]');
+  if(shareBtn) shareBtn.onclick = () => shareTemplate(t, values);
+  head.querySelector('[data-dup]').onclick = () => {
+    const copy = JSON.parse(JSON.stringify(t));
+    copy.id = uid();
+    copy.title = (t.title || 'ข้อความ') + ' (สำเนา)';
+    copy.copyCount = 0; copy.pinned = false;
+    shop.templates.unshift(copy);
+    render();
+    showToast('⧉ ทำสำเนาแล้ว');
+  };
   head.querySelector('[data-pin]').onclick = () => {
     t.pinned = !t.pinned;
     save();
@@ -809,6 +822,23 @@ async function copyImage(src){
   }catch(e){
     showToast('เบราว์เซอร์นี้คัดลอกรูปไม่ได้ — กด "บันทึกรูป" แทน');
   }
+}
+// แชร์ข้อความ (+รูปถ้าเครื่องรองรับ) ผ่าน share sheet ของเครื่อง เช่น ส่งเข้า LINE
+async function shareTemplate(t, values){
+  const text = fillBody(t.body, values);
+  try{
+    if(navigator.canShare && Array.isArray(t.images) && t.images.length){
+      const files = await Promise.all(t.images.map(async (src, i) => {
+        const blob = await (await fetch(src)).blob();
+        return new File([blob], 'image-' + (i+1) + '.jpg', {type: blob.type || 'image/jpeg'});
+      }));
+      if(navigator.canShare({files})){
+        await navigator.share(text.trim() ? {text, files} : {files});
+        return;
+      }
+    }
+    await navigator.share({text});
+  }catch(e){ /* ผู้ใช้กดยกเลิก share sheet — ไม่ต้องทำอะไร */ }
 }
 function downloadImage(src, name){
   const a = document.createElement('a');
@@ -1026,6 +1056,16 @@ $('applyCodeBtn').onclick = applyPastedCode;
 $('syncOverlay').onclick = e => { if(e.target === $('syncOverlay')) closeModals(); };
 // รูปภาพ
 $('addImgBtn').onclick = () => $('imgFileInput').click();
+// วางรูปจากคลิปบอร์ด (Ctrl+V) ขณะเปิดกล่องเพิ่ม/แก้ไขข้อความ
+document.addEventListener('paste', e => {
+  if(!$('tmplOverlay').classList.contains('show')) return;
+  const files = [...(e.clipboardData?.files || [])].filter(f => f.type.startsWith('image/'));
+  if(files.length){
+    e.preventDefault();
+    handleImageFiles(files);
+    showToast('📷 เพิ่มรูปจากคลิปบอร์ดแล้ว');
+  }
+});
 $('imgFileInput').onchange = e => { if(e.target.files.length) handleImageFiles([...e.target.files]); e.target.value=''; };
 function closeImgViewer(){ $('imgOverlay').classList.remove('show'); }
 $('imgCloseBtn').onclick = closeImgViewer;
